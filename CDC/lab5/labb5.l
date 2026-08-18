@@ -1,0 +1,312 @@
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX 100
+
+char regex[MAX];
+int stateCount = 0;
+int transitionCount = 0;
+
+typedef struct
+{
+    int from;
+    int to;
+    char symbol;
+} Transition;
+
+Transition transitions[500];
+
+typedef struct
+{
+    int start;
+    int end;
+} Fragment;
+
+
+/* Add transition */
+void addTransition(int from, int to, char symbol)
+{
+    transitions[transitionCount].from = from;
+    transitions[transitionCount].to = to;
+    transitions[transitionCount].symbol = symbol;
+    transitionCount++;
+}
+
+
+/* Create new state */
+int newState()
+{
+    return stateCount++;
+}
+
+
+/* Create NFA for symbol */
+Fragment makeSymbol(char symbol)
+{
+    Fragment f;
+
+    f.start = newState();
+    f.end = newState();
+
+    addTransition(f.start, f.end, symbol);
+
+    return f;
+}
+
+
+/* Concatenation */
+Fragment concatenate(Fragment a, Fragment b)
+{
+    Fragment f;
+
+    addTransition(a.end, b.start, 'e');
+
+    f.start = a.start;
+    f.end = b.end;
+
+    return f;
+}
+
+
+/* Union */
+Fragment unionFrag(Fragment a, Fragment b)
+{
+    Fragment f;
+
+    f.start = newState();
+    f.end = newState();
+
+    addTransition(f.start, a.start, 'e');
+    addTransition(f.start, b.start, 'e');
+
+    addTransition(a.end, f.end, 'e');
+    addTransition(b.end, f.end, 'e');
+
+    return f;
+}
+
+
+/* Kleene Star */
+Fragment star(Fragment a)
+{
+    Fragment f;
+
+    f.start = newState();
+    f.end = newState();
+
+    addTransition(f.start, a.start, 'e');
+    addTransition(f.start, f.end, 'e');
+
+    addTransition(a.end, a.start, 'e');
+    addTransition(a.end, f.end, 'e');
+
+    return f;
+}
+
+
+/* Operator precedence */
+int precedence(char op)
+{
+    if (op == '*')
+        return 3;
+
+    if (op == '.')
+        return 2;
+
+    if (op == '|')
+        return 1;
+
+    return 0;
+}
+
+
+/* Infix to postfix */
+void infixToPostfix(char *infix, char *postfix)
+{
+    char stack[MAX];
+    int top = -1;
+    int j = 0;
+    int i;
+    char c;
+
+    for (i = 0; infix[i] != '\0'; i++)
+    {
+        c = infix[i];
+
+        if (c == ' ')
+            continue;
+
+        /* Operand */
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9'))
+        {
+            postfix[j++] = c;
+        }
+
+        /* Opening bracket */
+        else if (c == '(')
+        {
+            stack[++top] = c;
+        }
+
+        /* Closing bracket */
+        else if (c == ')')
+        {
+            while (top >= 0 && stack[top] != '(')
+            {
+                postfix[j++] = stack[top--];
+            }
+
+            if (top >= 0)
+                top--;
+        }
+
+        /* Operator */
+        else
+        {
+            while (top >= 0 &&
+                   stack[top] != '(' &&
+                   precedence(stack[top]) >= precedence(c))
+            {
+                postfix[j++] = stack[top--];
+            }
+
+            stack[++top] = c;
+        }
+    }
+
+    while (top >= 0)
+    {
+        postfix[j++] = stack[top--];
+    }
+
+    postfix[j] = '\0';
+}
+
+
+/* Build NFA */
+Fragment buildNFA(char *postfix)
+{
+    Fragment stack[MAX];
+    int top = -1;
+    int i;
+    char c;
+
+    for (i = 0; postfix[i] != '\0'; i++)
+    {
+        c = postfix[i];
+
+        /* Operand */
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9'))
+        {
+            stack[++top] = makeSymbol(c);
+        }
+
+        /* Concatenation */
+        else if (c == '.')
+        {
+            Fragment b;
+            Fragment a;
+
+            b = stack[top--];
+            a = stack[top--];
+
+            stack[++top] = concatenate(a, b);
+        }
+
+        /* Union */
+        else if (c == '|')
+        {
+            Fragment b;
+            Fragment a;
+
+            b = stack[top--];
+            a = stack[top--];
+
+            stack[++top] = unionFrag(a, b);
+        }
+
+        /* Star */
+        else if (c == '*')
+        {
+            Fragment a;
+
+            a = stack[top--];
+
+            stack[++top] = star(a);
+        }
+    }
+
+    return stack[top];
+}
+
+
+/* Print NFA */
+void printNFA(Fragment result)
+{
+    int i;
+
+    printf("\nNFA Transition Table\n");
+    printf("-----------------------------\n");
+    printf("From\tSymbol\tTo\n");
+    printf("-----------------------------\n");
+
+    for (i = 0; i < transitionCount; i++)
+    {
+        printf("q%d\t%c\tq%d\n",
+               transitions[i].from,
+               transitions[i].symbol,
+               transitions[i].to);
+    }
+
+    printf("-----------------------------\n");
+    printf("Start State : q%d\n", result.start);
+    printf("Final State : q%d\n", result.end);
+}
+
+%}
+
+%%
+
+[^\n]+    {
+    char postfix[MAX];
+    Fragment result;
+
+    strcpy(regex, yytext);
+
+    printf("\nGiven Regular Expression: %s\n", regex);
+
+    infixToPostfix(regex, postfix);
+
+    printf("Postfix Expression: %s\n", postfix);
+
+    result = buildNFA(postfix);
+
+    printNFA(result);
+
+    stateCount = 0;
+    transitionCount = 0;
+}
+
+\n        {
+}
+
+%%
+
+int main()
+{
+    printf("Enter Regular Expression:\n");
+    yylex();
+
+    return 0;
+}
+
+int yywrap()
+{
+    return 1;
+}
