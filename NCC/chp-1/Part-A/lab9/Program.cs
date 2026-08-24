@@ -1,37 +1,46 @@
-﻿using System;
+using System;
+using System.IO;
 
-class Student
-{
-    // Auto-implemented properties
-    public string Name { get; set; }
-    public int Roll { get; set; }
-    public float Marks { get; set; }
-
-    // Constructor
-    public Student(string name, int roll, float marks)
-    {
-        Name = name;
-        Roll = roll;
-        Marks = marks;
-    }
-
-    // Method to display student details
-    public void Display()
-    {
-        Console.WriteLine("Name: " + Name);
-        Console.WriteLine("Roll: " + Roll);
-        Console.WriteLine("Marks: " + Marks);
-    }
-}
-
-class Program
+class FileProcessing
 {
     static void Main()
     {
-        // Object creation
-        Student s1 = new Student("Ram", 1, 85.5f);
+        string inputFile = "input.txt";
+        string outputFile = "output.txt";
 
-        // Display student details
-        s1.Display();
+        try
+        {
+            using (StreamReader reader = new StreamReader(inputFile))
+            using (StreamWriter writer = new StreamWriter(outputFile))
+            {
+                string line;
+
+                while ((line = reader.ReadLine()) != null)
+                {
+                    // Process the data: convert it to uppercase
+                    string processedLine = line.ToUpper();
+
+                    writer.WriteLine(processedLine);
+                }
+            }
+
+            Console.WriteLine("Data processed successfully.");
+        }
+        catch (FileNotFoundException)
+        {
+            Console.WriteLine("Error: Input file not found.");
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine("File I/O Error: " + ex.Message);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error: " + ex.Message);
+        }
+        finally
+        {
+            Console.WriteLine("File processing completed.");
+        }
     }
 }
