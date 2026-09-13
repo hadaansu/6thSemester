@@ -1,0 +1,1013 @@
+COMPILER DESIGN AND CONSTRUCTION
+LABS 7(a), 7(b), 8, 9, 10, 11 AND 12
+
+
+========================================================================
+LAB 7(a): REGULAR EXPRESSION TO DFA
+========================================================================
+
+Input notation: letters/digits, |, *, parentheses, implicit concatenation; # = epsilon.
+
+FILE: lab7a.l
+
+%option noyywrap noinput nounput
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define NS 256
+#define DS 512
+enum { LITERAL = 256 };
+static int literal;
+%}
+%%
+[a-zA-Z0-9] { literal = (unsigned char)yytext[0]; return LITERAL; }
+[ \t\r\n]+ ;
+.           { return (unsigned char)yytext[0]; }
+%%
+/* Thompson construction followed by epsilon-closure subset construction. */
+typedef struct { int symbol, out1, out2; } State;
+typedef struct { int start, end; } Fragment;
+static State nfa[NS];
+static int nn, look, alphabet[128], na;
+static unsigned char subsets[DS][NS];
+static int transition[DS][128], nd;
+static void fail(const char *s) { fprintf(stderr, "Error: %s\n", s); exit(1); }
+static int state(int symbol, int a, int b) {
+    if (nn == NS) fail("NFA state limit exceeded");
+    nfa[nn] = (State){symbol, a, b};
+    return nn++;
+}
+static void advance(void) { look = yylex(); }
+static Fragment expression(void);
+static Fragment atom(void) {
+    Fragment f;
+    if (look == LITERAL || look == '#') {
+        int c = look == '#' ? 0 : literal;
+        int s = state(c, -1, -1), e = state(0, -1, -1);
+        nfa[s].out1 = e;
+        if (c) alphabet[c] = 1;
+        advance();
+        return (Fragment){s, e};
+    }
+    if (look == '(') {
+        advance(); f = expression();
+        if (look != ')') fail("missing closing parenthesis");
+        advance(); return f;
+    }
+    fail("expected a literal, #, or parenthesized RE");
+    return (Fragment){0, 0};
+}
+static Fragment repeat(void) {
+    Fragment f = atom();
+    while (look == '*') {
+        int s = state(0, f.start, -1), e = state(0, -1, -1);
+        nfa[s].out2 = e;
+        nfa[f.end].out1 = f.start; nfa[f.end].out2 = e;
+        f = (Fragment){s, e}; advance();
+    }
+    return f;
+}
+static Fragment concatenation(void) {
+    Fragment f = repeat();
+    while (look == LITERAL || look == '#' || look == '(') {
+        Fragment g = repeat();
+        nfa[f.end].out1 = g.start; f.end = g.end;
+    }
+    return f;
+}
+static Fragment expression(void) {
+    Fragment f = concatenation();
+    while (look == '|') {
+        advance(); Fragment g = concatenation();
+        int s = state(0, f.start, g.start), e = state(0, -1, -1);
+        nfa[f.end].out1 = e; nfa[g.end].out1 = e;
+        f = (Fragment){s, e};
+    }
+    return f;
+}
+static void closure(unsigned char set[NS]) {
+    int changed;
+    do {
+        changed = 0;
+        for (int i = 0; i < nn; ++i) if (set[i] && nfa[i].symbol == 0) {
+            int out[2] = {nfa[i].out1, nfa[i].out2};
+            for (int j = 0; j < 2; ++j)
+                if (out[j] >= 0 && !set[out[j]]) { set[out[j]] = 1; changed = 1; }
+        }
+    } while (changed);
+}
+static int intern(unsigned char set[NS]) {
+    for (int i = 0; i < nd; ++i)
+        if (!memcmp(subsets[i], set, NS)) return i;
+    if (nd == DS) fail("DFA state limit exceeded");
+    memcpy(subsets[nd], set, NS); return nd++;
+}
+int main(void) {
+    advance(); Fragment re = expression();
+    if (look) fail("unexpected symbol after RE");
+    int symbols[128];
+    for (int c = 1; c < 128; ++c) if (alphabet[c]) symbols[na++] = c;
+    unsigned char initial[NS] = {0}; initial[re.start] = 1;
+    closure(initial); intern(initial);
+    for (int d = 0; d < nd; ++d) for (int a = 0; a < na; ++a) {
+        unsigned char next[NS] = {0};
+        for (int s = 0; s < nn; ++s)
+            if (subsets[d][s] && nfa[s].symbol == symbols[a] && nfa[s].out1 >= 0)
+                next[nfa[s].out1] = 1;
+        closure(next); transition[d][a] = intern(next);
+    }
+    printf("Start state: D0\nFinal states:");
+    for (int d = 0; d < nd; ++d) if (subsets[d][re.end]) printf(" D%d", d);
+    printf("\nState");
+    for (int a = 0; a < na; ++a) printf("\t%c", symbols[a]);
+    puts("\tNFA subset");
+    for (int d = 0; d < nd; ++d) {
+        printf("D%d", d);
+        for (int a = 0; a < na; ++a) printf("\tD%d", transition[d][a]);
+        printf("\t{"); int first = 1;
+        for (int s = 0; s < nn; ++s) if (subsets[d][s]) {
+            printf("%s%d", first ? "" : ",", s); first = 0;
+        }
+        puts("}");
+    }
+    return 0;
+}
+
+COMPILE AND RUN
+
+flex -o lab7a.lex.c lab7a.l
+gcc -std=c11 -D_POSIX_C_SOURCE=200809L lab7a.lex.c -o lab7a
+printf '%s\n' '(a|b)*abb' | ./lab7a
+
+SAMPLE INPUT
+
+(a|b)*abb
+
+SAMPLE OUTPUT
+
+Start state: D0
+Final states: D4
+State	a	b	NFA subset
+D0	D1	D2	{0,2,4,6,7,8}
+D1	D1	D3	{0,1,2,4,5,7,8,9,10}
+D2	D1	D2	{0,2,3,4,5,7,8}
+D3	D1	D4	{0,2,3,4,5,7,8,11,12}
+D4	D1	D2	{0,2,3,4,5,7,8,13}
+
+
+========================================================================
+LAB 7(b): DFA MINIMIZATION
+========================================================================
+
+Input: n k start final_count; final state numbers; k alphabet letters;
+then n transition rows with k destinations each. States are numbered 0 to n-1.
+
+FILE: lab7b.l
+
+%option noyywrap noinput nounput
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+enum { INTEGER = 256, SYMBOL };
+static long value;
+static char symbol;
+%}
+%%
+[0-9]+ { errno = 0; value = strtol(yytext, NULL, 10);
+          if (errno) return '?'; return INTEGER; }
+[a-zA-Z] { symbol = yytext[0]; return SYMBOL; }
+[ \t\r\n]+ ;
+. { return (unsigned char)yytext[0]; }
+%%
+#define MAX 128
+#define ALPHA 52
+static int delta[MAX][ALPHA], final[MAX], reachable[MAX];
+static int different[MAX][MAX], group[MAX], representative[MAX];
+static char alphabet[ALPHA];
+static void fail(const char *s) { fprintf(stderr, "Error: %s\n", s); exit(1); }
+static int number(int lo, int hi) {
+    if (yylex() != INTEGER || value < lo || value > hi) fail("invalid integer or range");
+    return (int)value;
+}
+int main(void) {
+    int n = number(1, MAX), k = number(1, ALPHA);
+    int start = number(0, n - 1), nf = number(0, n);
+    for (int i = 0; i < nf; ++i) {
+        int f = number(0, n - 1);
+        if (final[f]) fail("duplicate final state");
+        final[f] = 1;
+    }
+    for (int a = 0; a < k; ++a) {
+        if (yylex() != SYMBOL) fail("alphabet symbols must be single letters");
+        alphabet[a] = symbol;
+        for (int b = 0; b < a; ++b)
+            if (alphabet[b] == symbol) fail("duplicate alphabet symbol");
+    }
+    for (int s = 0; s < n; ++s)
+        for (int a = 0; a < k; ++a) delta[s][a] = number(0, n - 1);
+    if (yylex()) fail("extra input after transition table");
+    int queue[MAX], head = 0, tail = 0;
+    queue[tail++] = start; reachable[start] = 1;
+    while (head < tail) {
+        int s = queue[head++];
+        for (int a = 0; a < k; ++a) {
+            int t = delta[s][a];
+            if (!reachable[t]) { reachable[t] = 1; queue[tail++] = t; }
+        }
+    }
+    for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j)
+        different[i][j] = final[i] != final[j];
+    int changed;
+    do {
+        changed = 0;
+        for (int i = 0; i < n; ++i) if (reachable[i])
+            for (int j = 0; j < i; ++j) if (reachable[j] && !different[i][j])
+                for (int a = 0; a < k; ++a)
+                    if (different[delta[i][a]][delta[j][a]]) {
+                        different[i][j] = different[j][i] = 1;
+                        changed = 1; break;
+                    }
+    } while (changed);
+    int ng = 0;
+    for (int s = 0; s < n; ++s) {
+        group[s] = -1;
+        if (!reachable[s]) continue;
+        for (int g = 0; g < ng; ++g) if (!different[s][representative[g]]) {
+            group[s] = g; break;
+        }
+        if (group[s] < 0) { representative[ng] = s; group[s] = ng++; }
+    }
+    printf("Unreachable states:");
+    int removed = 0;
+    for (int s = 0; s < n; ++s) if (!reachable[s]) { printf(" %d", s); removed = 1; }
+    if (!removed) printf(" none");
+    printf("\nMinimized states: %d\nStart state: M%d\nFinal states:", ng, group[start]);
+    for (int g = 0; g < ng; ++g) if (final[representative[g]]) printf(" M%d", g);
+    puts("");
+    for (int g = 0; g < ng; ++g) {
+        printf("M%d = {", g); int first = 1;
+        for (int s = 0; s < n; ++s) if (group[s] == g) {
+            printf("%s%d", first ? "" : ",", s); first = 0;
+        }
+        puts("}");
+    }
+    printf("State");
+    for (int a = 0; a < k; ++a) printf("\t%c", alphabet[a]);
+    puts("");
+    for (int g = 0; g < ng; ++g) {
+        printf("M%d", g);
+        for (int a = 0; a < k; ++a) printf("\tM%d", group[delta[representative[g]][a]]);
+        puts("");
+    }
+    return 0;
+}
+
+COMPILE AND RUN
+
+flex -o lab7b.lex.c lab7b.l
+gcc -std=c11 -D_POSIX_C_SOURCE=200809L lab7b.lex.c -o lab7b
+./lab7b < dfa_input.txt
+
+Save the sample input as dfa_input.txt.
+
+SAMPLE INPUT
+
+6 2 0 2
+3 4
+a b
+1 2
+1 3
+1 4
+3 3
+4 4
+5 5
+
+SAMPLE OUTPUT
+
+Unreachable states: 5
+Minimized states: 3
+Start state: M0
+Final states: M2
+M0 = {0}
+M1 = {1,2}
+M2 = {3,4}
+State	a	b
+M0	M1	M1
+M1	M1	M2
+M2	M2	M2
+
+
+========================================================================
+LAB 8: CFG FOR AN EXPRESSION LANGUAGE AND STRING VERIFICATION
+========================================================================
+
+GRAMMAR
+
+E -> E + T | E - T | T
+T -> T * F | T / F | F
+F -> ( E ) | id | number
+
+FILE: lab8.y
+
+%{
+#include <stdio.h>
+int yylex(void);
+void yyerror(const char *message);
+%}
+%token ID NUMBER INVALID
+%start input
+%%
+input : expression ;
+expression : expression '+' term
+           | expression '-' term
+           | term ;
+term : term '*' factor
+     | term '/' factor
+     | factor ;
+factor : '(' expression ')'
+       | ID
+       | NUMBER ;
+%%
+void yyerror(const char *message) { fprintf(stderr, "Invalid expression: %s\n", message); }
+int main(void) {
+    int result = yyparse();
+    if (result == 0) puts("Valid expression");
+    return result == 0 ? 0 : 1;
+}
+
+FILE: lab8.l
+
+%option noyywrap noinput nounput
+%{
+#include "lab8.tab.h"
+%}
+%%
+[a-zA-Z_][a-zA-Z0-9_]*       { return ID; }
+([0-9]+(\.[0-9]+)?|\.[0-9]+) { return NUMBER; }
+[+*/()-]                     { return (unsigned char)yytext[0]; }
+[ \t\r\n]+                  ;
+.                            { return INVALID; }
+%%
+
+COMPILE AND RUN
+
+bison -d -o lab8.tab.c lab8.y
+flex -o lab8.lex.c lab8.l
+gcc -std=c11 -D_POSIX_C_SOURCE=200809L lab8.tab.c lab8.lex.c -o lab8
+printf '%s\n' 'a+b*c' | ./lab8
+
+SAMPLE INPUT
+
+a+b*c
+
+SAMPLE OUTPUT
+
+Valid expression
+
+SAMPLE INPUT
+
+a+*b
+
+SAMPLE OUTPUT
+
+Invalid expression: syntax error
+
+
+========================================================================
+LAB 9: FIRST AND FOLLOW SETS
+========================================================================
+
+Input: one production per line; uppercase letters are nonterminals,
+lowercase letters/operators are single-character terminals, # = epsilon.
+The first LHS is the start symbol. Use i for the identifier terminal.
+
+FILE: lab9.l
+
+%option noyywrap noinput nounput
+%{
+#ifndef GRAMMAR_CORE_H
+#define GRAMMAR_CORE_H
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define MAX_PROD 256
+#define MAX_RHS 64
+#define ASCII 128
+enum { ARROW = 256, BAD_TOKEN };
+int yylex(void);
+typedef struct { int lhs; char rhs[MAX_RHS]; } Production;
+static Production prod[MAX_PROD];
+static int np, start_symbol = -1, defined[26], used[26], terminals[ASCII];
+/* Index zero in FIRST is epsilon; FOLLOW never contains epsilon. */
+static unsigned char first_set[26][ASCII], follow_set[26][ASCII];
+static void fail(const char *s) { fprintf(stderr, "Error: %s\n", s); exit(1); }
+static int nonterminal(int c) { return c >= 'A' && c <= 'Z'; }
+static void add_production(int lhs, const char *rhs) {
+    if (np == MAX_PROD) fail("too many productions");
+    for (int p = 0; p < np; ++p)
+        if (prod[p].lhs == lhs && !strcmp(prod[p].rhs, rhs)) return;
+    prod[np].lhs = lhs; strcpy(prod[np++].rhs, rhs);
+}
+static void read_grammar(void) {
+    int t = yylex();
+    while (t) {
+        if (t == '\n') { t = yylex(); continue; }
+        if (!nonterminal(t)) fail("LHS must be one uppercase letter");
+        int lhs = t - 'A'; defined[lhs] = 1;
+        if (start_symbol < 0) start_symbol = lhs;
+        if (yylex() != ARROW) fail("expected -> after LHS");
+        t = yylex();
+        for (;;) {
+            char rhs[MAX_RHS]; int len = 0, epsilon = 0;
+            while (t && t != '\n' && t != '|') {
+                if (t == '#') {
+                    if (len || epsilon) fail("# must be the entire alternative");
+                    epsilon = 1;
+                } else {
+                    if (epsilon || t < 33 || t >= ASCII || t == '$')
+                        fail("invalid RHS symbol or mixed epsilon");
+                    if (len == MAX_RHS - 1) fail("RHS too long");
+                    rhs[len++] = (char)t;
+                    if (nonterminal(t)) used[t - 'A'] = 1;
+                    else terminals[t] = 1;
+                }
+                t = yylex();
+            }
+            if (!len && !epsilon) fail("empty alternative; use # for epsilon");
+            rhs[len] = '\0'; add_production(lhs, rhs);
+            if (t != '|') break;
+            t = yylex();
+        }
+        if (t == '\n') t = yylex();
+    }
+    if (!np) fail("empty grammar");
+    for (int n = 0; n < 26; ++n)
+        if (used[n] && !defined[n]) fail("an RHS nonterminal has no production");
+}
+static int unite(unsigned char *dst, const unsigned char *src, int include_epsilon) {
+    int changed = 0;
+    for (int c = include_epsilon ? 0 : 1; c < ASCII; ++c)
+        if (src[c] && !dst[c]) { dst[c] = 1; changed = 1; }
+    return changed;
+}
+static void first_of_string(const char *s, unsigned char result[ASCII]) {
+    memset(result, 0, ASCII);
+    for (int i = 0; s[i]; ++i) {
+        int c = (unsigned char)s[i];
+        if (!nonterminal(c)) { result[c] = 1; return; }
+        unite(result, first_set[c - 'A'], 0);
+        if (!first_set[c - 'A'][0]) return;
+    }
+    result[0] = 1;
+}
+static void compute_sets(void) {
+    int changed;
+    do {
+        changed = 0;
+        for (int p = 0; p < np; ++p) {
+            unsigned char s[ASCII]; first_of_string(prod[p].rhs, s);
+            changed |= unite(first_set[prod[p].lhs], s, 1);
+        }
+    } while (changed);
+    follow_set[start_symbol]['$'] = 1;
+    do {
+        changed = 0;
+        for (int p = 0; p < np; ++p)
+            for (int i = 0; prod[p].rhs[i]; ++i) {
+                int c = (unsigned char)prod[p].rhs[i];
+                if (!nonterminal(c)) continue;
+                unsigned char suffix[ASCII]; first_of_string(prod[p].rhs + i + 1, suffix);
+                changed |= unite(follow_set[c - 'A'], suffix, 0);
+                if (suffix[0]) changed |= unite(follow_set[c - 'A'], follow_set[prod[p].lhs], 0);
+            }
+    } while (changed);
+}
+static void print_set(const unsigned char *set) {
+    printf("{ ");
+    for (int c = 0; c < ASCII; ++c) if (set[c]) printf("%c ", c ? c : '#');
+    puts("}");
+}
+static void print_production(int p) {
+    printf("%c->%s", 'A' + prod[p].lhs, prod[p].rhs[0] ? prod[p].rhs : "#");
+}
+static void print_sets(void) {
+    printf("Start symbol: %c\n", 'A' + start_symbol);
+    for (int n = 0; n < 26; ++n) if (defined[n]) {
+        printf("FIRST(%c) = ", 'A' + n); print_set(first_set[n]);
+        printf("FOLLOW(%c) = ", 'A' + n); print_set(follow_set[n]);
+    }
+}
+int main(void) {
+    read_grammar(); compute_sets(); print_sets();
+    /* Also list the exact productions analyzed. */
+    puts("Productions:");
+    for (int p = 0; p < np; ++p) { print_production(p); puts(""); }
+    return 0;
+}
+#endif
+%}
+%%
+"->"         { return ARROW; }
+[ \t\r]+    ;
+\n           { return '\n'; }
+[\x21-\x7E] { return (unsigned char)yytext[0]; }
+.            { return BAD_TOKEN; }
+%%
+
+COMPILE AND RUN
+
+flex -o lab9.lex.c lab9.l
+gcc -std=c11 -D_POSIX_C_SOURCE=200809L lab9.lex.c -o lab9
+./lab9 < grammar_input.txt
+
+Save the sample input as grammar_input.txt.
+
+SAMPLE INPUT
+
+E->TX
+X->+TX|#
+T->FY
+Y->*FY|#
+F->(E)|i
+
+SAMPLE OUTPUT
+
+Start symbol: E
+FIRST(E) = { ( i }
+FOLLOW(E) = { $ ) }
+FIRST(F) = { ( i }
+FOLLOW(F) = { $ ) * + }
+FIRST(T) = { ( i }
+FOLLOW(T) = { $ ) + }
+FIRST(X) = { # + }
+FOLLOW(X) = { $ ) }
+FIRST(Y) = { # * }
+FOLLOW(Y) = { $ ) + }
+Productions:
+E->TX
+X->+TX
+X->#
+T->FY
+Y->*FY
+Y->#
+F->(E)
+F->i
+
+
+========================================================================
+LAB 10: LL(1) CHECK AND PREDICTIVE PARSING TABLE
+========================================================================
+
+Input: one production per line; uppercase letters are nonterminals,
+lowercase letters/operators are single-character terminals, # = epsilon.
+The first LHS is the start symbol. Use i for the identifier terminal.
+
+FILE: lab10.l
+
+%option noyywrap noinput nounput
+%{
+#ifndef GRAMMAR_CORE_H
+#define GRAMMAR_CORE_H
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define MAX_PROD 256
+#define MAX_RHS 64
+#define ASCII 128
+enum { ARROW = 256, BAD_TOKEN };
+int yylex(void);
+typedef struct { int lhs; char rhs[MAX_RHS]; } Production;
+static Production prod[MAX_PROD];
+static int np, start_symbol = -1, defined[26], used[26], terminals[ASCII];
+/* Index zero in FIRST is epsilon; FOLLOW never contains epsilon. */
+static unsigned char first_set[26][ASCII], follow_set[26][ASCII];
+static void fail(const char *s) { fprintf(stderr, "Error: %s\n", s); exit(1); }
+static int nonterminal(int c) { return c >= 'A' && c <= 'Z'; }
+static void add_production(int lhs, const char *rhs) {
+    if (np == MAX_PROD) fail("too many productions");
+    for (int p = 0; p < np; ++p)
+        if (prod[p].lhs == lhs && !strcmp(prod[p].rhs, rhs)) return;
+    prod[np].lhs = lhs; strcpy(prod[np++].rhs, rhs);
+}
+static void read_grammar(void) {
+    int t = yylex();
+    while (t) {
+        if (t == '\n') { t = yylex(); continue; }
+        if (!nonterminal(t)) fail("LHS must be one uppercase letter");
+        int lhs = t - 'A'; defined[lhs] = 1;
+        if (start_symbol < 0) start_symbol = lhs;
+        if (yylex() != ARROW) fail("expected -> after LHS");
+        t = yylex();
+        for (;;) {
+            char rhs[MAX_RHS]; int len = 0, epsilon = 0;
+            while (t && t != '\n' && t != '|') {
+                if (t == '#') {
+                    if (len || epsilon) fail("# must be the entire alternative");
+                    epsilon = 1;
+                } else {
+                    if (epsilon || t < 33 || t >= ASCII || t == '$')
+                        fail("invalid RHS symbol or mixed epsilon");
+                    if (len == MAX_RHS - 1) fail("RHS too long");
+                    rhs[len++] = (char)t;
+                    if (nonterminal(t)) used[t - 'A'] = 1;
+                    else terminals[t] = 1;
+                }
+                t = yylex();
+            }
+            if (!len && !epsilon) fail("empty alternative; use # for epsilon");
+            rhs[len] = '\0'; add_production(lhs, rhs);
+            if (t != '|') break;
+            t = yylex();
+        }
+        if (t == '\n') t = yylex();
+    }
+    if (!np) fail("empty grammar");
+    for (int n = 0; n < 26; ++n)
+        if (used[n] && !defined[n]) fail("an RHS nonterminal has no production");
+}
+static int unite(unsigned char *dst, const unsigned char *src, int include_epsilon) {
+    int changed = 0;
+    for (int c = include_epsilon ? 0 : 1; c < ASCII; ++c)
+        if (src[c] && !dst[c]) { dst[c] = 1; changed = 1; }
+    return changed;
+}
+static void first_of_string(const char *s, unsigned char result[ASCII]) {
+    memset(result, 0, ASCII);
+    for (int i = 0; s[i]; ++i) {
+        int c = (unsigned char)s[i];
+        if (!nonterminal(c)) { result[c] = 1; return; }
+        unite(result, first_set[c - 'A'], 0);
+        if (!first_set[c - 'A'][0]) return;
+    }
+    result[0] = 1;
+}
+static void compute_sets(void) {
+    int changed;
+    do {
+        changed = 0;
+        for (int p = 0; p < np; ++p) {
+            unsigned char s[ASCII]; first_of_string(prod[p].rhs, s);
+            changed |= unite(first_set[prod[p].lhs], s, 1);
+        }
+    } while (changed);
+    follow_set[start_symbol]['$'] = 1;
+    do {
+        changed = 0;
+        for (int p = 0; p < np; ++p)
+            for (int i = 0; prod[p].rhs[i]; ++i) {
+                int c = (unsigned char)prod[p].rhs[i];
+                if (!nonterminal(c)) continue;
+                unsigned char suffix[ASCII]; first_of_string(prod[p].rhs + i + 1, suffix);
+                changed |= unite(follow_set[c - 'A'], suffix, 0);
+                if (suffix[0]) changed |= unite(follow_set[c - 'A'], follow_set[prod[p].lhs], 0);
+            }
+    } while (changed);
+}
+static void print_set(const unsigned char *set) {
+    printf("{ ");
+    for (int c = 0; c < ASCII; ++c) if (set[c]) printf("%c ", c ? c : '#');
+    puts("}");
+}
+static void print_production(int p) {
+    printf("%c->%s", 'A' + prod[p].lhs, prod[p].rhs[0] ? prod[p].rhs : "#");
+}
+static void print_sets(void) {
+    printf("Start symbol: %c\n", 'A' + start_symbol);
+    for (int n = 0; n < 26; ++n) if (defined[n]) {
+        printf("FIRST(%c) = ", 'A' + n); print_set(first_set[n]);
+        printf("FOLLOW(%c) = ", 'A' + n); print_set(follow_set[n]);
+    }
+}
+static int table[26][ASCII][MAX_PROD], count[26][ASCII];
+static void table_add(int n, int c, int p) {
+    for (int i = 0; i < count[n][c]; ++i) if (table[n][c][i] == p) return;
+    table[n][c][count[n][c]++] = p;
+}
+static void build_table(void) {
+    for (int p = 0; p < np; ++p) {
+        unsigned char s[ASCII]; first_of_string(prod[p].rhs, s);
+        int n = prod[p].lhs;
+        for (int c = 1; c < ASCII; ++c)
+            if (s[c] || (s[0] && follow_set[n][c])) table_add(n, c, p);
+    }
+    puts("Productions:");
+    for (int p = 0; p < np; ++p) {
+        printf("P%d: ", p + 1); print_production(p); puts("");
+    }
+    puts("Predictive parsing table (all terminal columns, including error cells):");
+    int conflicts = 0;
+    for (int n = 0; n < 26; ++n) if (defined[n])
+        for (int c = 1; c < ASCII; ++c) if (terminals[c] || c == '$') {
+            printf("M[%c,%c] = ", 'A' + n, c);
+            if (!count[n][c]) printf("error");
+            for (int i = 0; i < count[n][c]; ++i) {
+                if (i) printf(" / ");
+                print_production(table[n][c][i]);
+            }
+            if (count[n][c] > 1) { printf("  CONFLICT"); ++conflicts; }
+            puts("");
+        }
+    /* A conflict-free table is meaningful only for a productive start language. */
+    int productive[26] = {0}, changed;
+    do {
+        changed = 0;
+        for (int p = 0; p < np; ++p) {
+            int ok = 1;
+            for (int i = 0; prod[p].rhs[i]; ++i)
+                if (nonterminal(prod[p].rhs[i]) && !productive[prod[p].rhs[i] - 'A']) ok = 0;
+            if (ok && !productive[prod[p].lhs]) { productive[prod[p].lhs] = 1; changed = 1; }
+        }
+    } while (changed);
+    int bad = 0;
+    for (int n = 0; n < 26; ++n) if (defined[n] && !productive[n]) {
+        printf("Nonproductive nonterminal: %c\n", 'A' + n); bad = 1;
+    }
+    if (conflicts) puts("Grammar is NOT LL(1): table conflicts exist.");
+    else if (bad) puts("No table conflicts, but grammar is nonproductive; simplify it before LL(1) use.");
+    else puts("Grammar is LL(1).");
+}
+int main(void) {
+    read_grammar(); compute_sets(); print_sets();
+    build_table();
+    return 0;
+}
+#endif
+%}
+%%
+"->"         { return ARROW; }
+[ \t\r]+    ;
+\n           { return '\n'; }
+[\x21-\x7E] { return (unsigned char)yytext[0]; }
+.            { return BAD_TOKEN; }
+%%
+
+COMPILE AND RUN
+
+flex -o lab10.lex.c lab10.l
+gcc -std=c11 -D_POSIX_C_SOURCE=200809L lab10.lex.c -o lab10
+./lab10 < grammar_input.txt
+
+Save the sample input as grammar_input.txt.
+
+SAMPLE INPUT
+
+E->TX
+X->+TX|#
+T->FY
+Y->*FY|#
+F->(E)|i
+
+SAMPLE OUTPUT
+
+Start symbol: E
+FIRST(E) = { ( i }
+FOLLOW(E) = { $ ) }
+FIRST(F) = { ( i }
+FOLLOW(F) = { $ ) * + }
+FIRST(T) = { ( i }
+FOLLOW(T) = { $ ) + }
+FIRST(X) = { # + }
+FOLLOW(X) = { $ ) }
+FIRST(Y) = { # * }
+FOLLOW(Y) = { $ ) + }
+Productions:
+P1: E->TX
+P2: X->+TX
+P3: X->#
+P4: T->FY
+P5: Y->*FY
+P6: Y->#
+P7: F->(E)
+P8: F->i
+Predictive parsing table (all terminal columns, including error cells):
+M[E,$] = error
+M[E,(] = E->TX
+M[E,)] = error
+M[E,*] = error
+M[E,+] = error
+M[E,i] = E->TX
+M[F,$] = error
+M[F,(] = F->(E)
+M[F,)] = error
+M[F,*] = error
+M[F,+] = error
+M[F,i] = F->i
+M[T,$] = error
+M[T,(] = T->FY
+M[T,)] = error
+M[T,*] = error
+M[T,+] = error
+M[T,i] = T->FY
+M[X,$] = X->#
+M[X,(] = error
+M[X,)] = X->#
+M[X,*] = error
+M[X,+] = X->+TX
+M[X,i] = error
+M[Y,$] = Y->#
+M[Y,(] = error
+M[Y,)] = Y->#
+M[Y,*] = Y->*FY
+M[Y,+] = Y->#
+M[Y,i] = error
+Grammar is LL(1).
+
+SAMPLE INPUT
+
+S->aA|aB
+A->b
+B->c
+
+SAMPLE OUTPUT
+
+Start symbol: S
+FIRST(A) = { b }
+FOLLOW(A) = { $ }
+FIRST(B) = { c }
+FOLLOW(B) = { $ }
+FIRST(S) = { a }
+FOLLOW(S) = { $ }
+Productions:
+P1: S->aA
+P2: S->aB
+P3: A->b
+P4: B->c
+Predictive parsing table (all terminal columns, including error cells):
+M[A,$] = error
+M[A,a] = error
+M[A,b] = A->b
+M[A,c] = error
+M[B,$] = error
+M[B,a] = error
+M[B,b] = error
+M[B,c] = B->c
+M[S,$] = error
+M[S,a] = S->aA / S->aB  CONFLICT
+M[S,b] = error
+M[S,c] = error
+Grammar is NOT LL(1): table conflicts exist.
+
+
+========================================================================
+LAB 11: RECURSIVE DESCENT PARSER FOR ARITHMETIC EXPRESSIONS
+========================================================================
+
+GRAMMAR
+
+E -> T R
+R -> + T R | - T R | epsilon
+T -> F S
+S -> * F S | / F S | epsilon
+F -> ( E ) | id | number
+
+Lex supplies tokens; C functions implement the required top-down parser.
+
+FILE: lab11.l
+
+%option noyywrap noinput nounput
+%{
+#include <stdio.h>
+#include <stdlib.h>
+enum { ID = 256, NUMBER, INVALID };
+%}
+%%
+[a-zA-Z_][a-zA-Z0-9_]*        { return ID; }
+([0-9]+(\.[0-9]+)?|\.[0-9]+) { return NUMBER; }
+[+*/()-]                      { return (unsigned char)yytext[0]; }
+[ \t\r\n]+                   ;
+.                             { return INVALID; }
+%%
+/* E -> T R; R -> + T R | - T R | epsilon
+   T -> F S; S -> * F S | / F S | epsilon
+   F -> ( E ) | id | number
+   Loops implement R and S without recursive calls for long operator chains. */
+static int look, depth;
+static void expression(void);
+static void fail(const char *s) { fprintf(stderr, "Invalid expression: %s\n", s); exit(1); }
+static void advance(void) { look = yylex(); }
+static void factor(void) {
+    if (look == ID || look == NUMBER) { advance(); return; }
+    if (look == '(') {
+        if (++depth > 256) fail("parenthesis nesting exceeds 256");
+        advance(); expression();
+        if (look != ')') fail("expected closing parenthesis");
+        --depth; advance(); return;
+    }
+    fail("expected identifier, number, or opening parenthesis");
+}
+static void term(void) {
+    factor();
+    while (look == '*' || look == '/') { advance(); factor(); }
+}
+static void expression(void) {
+    term();
+    while (look == '+' || look == '-') { advance(); term(); }
+}
+int main(void) {
+    advance(); expression();
+    if (look != 0) fail("unexpected trailing token");
+    puts("Valid expression (recursive descent)");
+    return 0;
+}
+
+COMPILE AND RUN
+
+flex -o lab11.lex.c lab11.l
+gcc -std=c11 -D_POSIX_C_SOURCE=200809L lab11.lex.c -o lab11
+printf '%s\n' 'a+b*c' | ./lab11
+
+SAMPLE INPUT
+
+a+b*c
+
+SAMPLE OUTPUT
+
+Valid expression (recursive descent)
+
+
+========================================================================
+LAB 12: SHIFT-REDUCE PARSER FOR ARITHMETIC EXPRESSIONS
+========================================================================
+
+GRAMMAR
+
+E -> E + T | E - T | T
+T -> T * F | T / F | F
+F -> ( E ) | id | number
+
+FILE: lab12.y
+
+%{
+#include <stdio.h>
+int yylex(void);
+void yyerror(const char *message);
+%}
+%token ID NUMBER INVALID
+%start input
+%%
+input : expression { puts("Reduce: input -> E"); } ;
+expression : expression '+' term { puts("Reduce: E -> E + T"); }
+           | expression '-' term { puts("Reduce: E -> E - T"); }
+           | term                { puts("Reduce: E -> T"); } ;
+term : term '*' factor { puts("Reduce: T -> T * F"); }
+     | term '/' factor { puts("Reduce: T -> T / F"); }
+     | factor          { puts("Reduce: T -> F"); } ;
+factor : '(' expression ')' { puts("Reduce: F -> ( E )"); }
+       | ID                 { puts("Reduce: F -> id"); }
+       | NUMBER             { puts("Reduce: F -> number"); } ;
+%%
+void yyerror(const char *message) { fprintf(stderr, "Rejected: %s\n", message); }
+int main(void) {
+    /* The generated Yacc/Bison engine performs actual LR shifts/reductions.
+       Compile with -DYYDEBUG=1 for its state/stack/shift trace on stderr. */
+#if YYDEBUG
+    yydebug = 1;
+#endif
+    int result = yyparse();
+    if (!result) puts("Accepted (shift-reduce parser)");
+    return result == 0 ? 0 : 1;
+}
+
+FILE: lab12.l
+
+%option noyywrap noinput nounput
+%{
+#include "lab12.tab.h"
+%}
+%%
+[a-zA-Z_][a-zA-Z0-9_]*        { return ID; }
+([0-9]+(\.[0-9]+)?|\.[0-9]+) { return NUMBER; }
+[+*/()-]                      { return (unsigned char)yytext[0]; }
+[ \t\r\n]+                   ;
+.                             { return INVALID; }
+%%
+
+COMPILE AND RUN
+
+bison -d -v -o lab12.tab.c lab12.y
+flex -o lab12.lex.c lab12.l
+gcc -std=c11 -D_POSIX_C_SOURCE=200809L -DYYDEBUG=1 lab12.tab.c lab12.lex.c -o lab12
+printf '%s\n' 'a+b*c' | ./lab12 2> lab12_trace.txt
+cat lab12_trace.txt
+
+SAMPLE INPUT
+
+a+b*c
+
+SAMPLE OUTPUT
+
+Reduce: F -> id
+Reduce: T -> F
+Reduce: E -> T
+Reduce: F -> id
+Reduce: T -> F
+Reduce: F -> id
+Reduce: T -> T * F
+Reduce: E -> E + T
+Reduce: input -> E
+Accepted (shift-reduce parser)
+
+The sample output above is stdout. Actual shift/state/stack details appear
+in lab12_trace.txt.
